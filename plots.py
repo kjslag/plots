@@ -5,6 +5,7 @@ import numpy as np
 import scipy
 import torch
 import matplotlib.pyplot as plt
+from collections.abc import Iterable, Mapping
 
 import mpl_toolkits.axes_grid1
 
@@ -27,6 +28,8 @@ import mpl_toolkits.axes_grid1
 # plt.colorbar()
 # plt.axis('off')
 # plt.show()
+
+rainbow = plt.get_cmap("gist_rainbow")
 
 class Line:
     def __init__(self, _x_or_y=None, /, y=None, label=None, *, x=None, fit=False, args=None, **kwargs):
@@ -65,11 +68,10 @@ def plot(lines,
          legend=True, # or a dict of legend options
          args=['o-'],
          **kwargs):
-
-    if len(lines) == 0:
+    if isinstance(lines, list) and len(lines) == 0:
         print(f'plots.plot: nothing to plot: {lines}')
         return
-    
+
     if not isinstance(lines, list) or isinstance(lines[0], numbers.Number):
         lines = [lines]
 
@@ -189,11 +191,29 @@ def plot_data(dataset, x_fn, y_fn, label_fn, *args,
                  for (_,l), xys in sorted(xyls_dict.items())]
     return subplot(post_process(plot_data), *args, **kwargs)
 
-def gridplot_data(dataset, x_fn, y_fn, label_fns, *args, grid_kwargs={}, **kwargs):
-    if not isinstance(label_fns[0], list):
-        label_fns = [label_fns]
-    
-    subplots = [ [subplot_data(dataset, x_fn, y_fn, f, *args, **kwargs) for f in fs] for fs in label_fns ]
+def gridplot_data(dataset, x_fn, y_fn, label_fn, *args, grid_kwargs={}, **kwargs):
+    if isinstance(y_fn, list) and isinstance(label_fn, list):
+        subplots = [
+            [subplot_data(dataset, x_fn, y, l, *args, **kwargs) for l in label_fn]
+            for y in y_fn
+        ]
+    if isinstance(y_fn, list):
+        if not isinstance(y_fn[0], list):
+            y_fn = [y_fn]
+        subplots = [
+            [subplot_data(dataset, x_fn, f, label_fn, *args, **kwargs) for f in fs]
+            for fs in y_fn
+        ]
+    elif isinstance(label_fn, list):
+        if not isinstance(label_fn[0], list):
+            label_fn = [label_fn]
+        subplots = [
+            [subplot_data(dataset, x_fn, y_fn, f, *args, **kwargs) for f in fs]
+            for fs in label_fn
+        ]
+    else:
+        assert False
+
     grid(*subplots, **grid_kwargs)
 
 def subplot_data(*args, **kwargs):
@@ -216,8 +236,11 @@ def grid(*subplots, figsize=16):
     for i in range(n_rows):
         for j in range(n_cols):
             sub = subplots[i,j]
-            sub.plot(*sub.args, **sub.kwargs, subplot=axs[i,j])
-    
+            if sub is not None:
+                sub.plot(*sub.args, **sub.kwargs, subplot=axs[i,j])
+            else:
+                axs[i,j].axis('off')
+
     plt.tight_layout(pad=1*n_rows/n_cols)
 #     plt.tight_layout(pad=10*n_rows/n_cols)
     plt.show()
@@ -239,21 +262,20 @@ class SubImage(Sub):
 def images(images, grid_figsize=16, **kwargs):
     grid(*[SubImage(image, **kwargs) for image in images], figsize=grid_figsize)
 
-def image(image, title=None, subplot=plt, figsize=(9,5), legend=None, **kwargs):
+# cmap='coolwarm'
+def image(image, title=None, subplot=plt, figsize=(9,5), legend=None, show=True, **kwargs):
     C, H, W = image.shape
+    image = tensor_items(image)
 
     is_plt = subplot is plt
     if is_plt:
         plt.figure(figsize=figsize)
 
-    if isinstance(image, torch.Tensor):
-        image = image.detach().float().cpu().numpy()
-
     if C == 1:
         image = image[0]
         if 'cmap' not in kwargs:
             kwargs = dict(cmap='gray', vmin=0, vmax=1) | kwargs
-        elif legend is None:
+        if legend is None:
             legend = True
     elif C == 3:
         image = image.transpose(1, 2, 0)
@@ -261,6 +283,7 @@ def image(image, title=None, subplot=plt, figsize=(9,5), legend=None, **kwargs):
         assert False
 
     im = subplot.imshow(image, **kwargs)
+
     if legend:
         if is_plt:
             plt.colorbar()
@@ -270,7 +293,7 @@ def image(image, title=None, subplot=plt, figsize=(9,5), legend=None, **kwargs):
     if title is not None:
         subplot.set_title(title)
     subplot.axis('off')
-    if is_plt:
+    if is_plt and show:
         plt.show()
 
 def hist(x, *args, show=True, **kwargs):
@@ -281,20 +304,19 @@ def hist(x, *args, show=True, **kwargs):
 
 def tensor_items(xs):
     """Recursively convert tensors contained in xs to numbers or numpy arrays."""
-    if isinstance(xs, list):
-        return [tensor_items(x) for x in xs]
-    elif isinstance(xs, tuple):
-        return tuple(tensor_items(x) for x in xs)
-    elif isinstance(xs, dict):
-        return {k: tensor_items(v) for k,v in xs.items()}
-    elif isinstance(xs, torch.Tensor):
+    if isinstance(xs, torch.Tensor):
         dtype = xs.dtype
         if dtype == torch.bfloat16:
             dtype = torch.float32
         return xs.item() if xs.dim()==0 else xs.detach().to(dtype=dtype, device='cpu').numpy()
     elif isinstance(xs, np.ndarray):
         return xs
-    elif hasattr(xs, '__next__') and not hasattr(xs, '__getitem__'):
-        return (tensor_items(x) for x in xs)
+    elif isinstance(xs, Mapping):
+        return {k: tensor_items(v) for k, v in xs.items()}
+    elif isinstance(xs, Iterable):
+        ys = (tensor_items(x) for x in xs)
+        if isinstance(xs, (list, tuple)):
+            ys = type(xs)(ys)
+        return ys
     else:
         return xs
